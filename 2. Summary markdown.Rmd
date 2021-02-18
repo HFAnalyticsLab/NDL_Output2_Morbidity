@@ -1,0 +1,532 @@
+---
+title: "Summary markdown"
+author: "Sebastien Peytrignet"
+date: "1/22/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#Markdown setup
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(dplyr,stringr,sp,ggplot2,plyr,readODS,
+               gmodels,Rmisc,DescTools,data.table,readxl,
+               Hmisc,tibble,leaflet,rgeos,raster,plotly,
+               pbapply,pbmcapply,here,rgdal,RColorBrewer,ggthemes,
+               ggchicklet,tidyverse,showtext,ggchicklet,
+               viridis,hrbrthemes)
+
+#Clean up the global environment
+rm(list = ls())
+
+#Git directory
+gitdir <- dirname(rstudioapi::getSourceEditorContext()$path)
+
+#Set directory where inputs are saved
+rawdatadir <- "M:/Analytics/Networked Data Lab/Partner outputs/Output 2 Morbidity/"
+graphsdir <- "M:/Analytics/Networked Data Lab/Partner outputs/Output 2 Morbidity/Charts/"
+
+#Load partner data
+table1.all.partners <- fread(paste0(rawdatadir,"table1.all.partners.csv"),
+                                 header=TRUE, sep=",", check.names=T)
+
+table2.all.partners <- fread(paste0(rawdatadir,"table2.all.partners.csv"),
+                             header=TRUE, sep=",", check.names=T)
+
+table3.all.partners <- fread(paste0(rawdatadir,"table3.all.partners.csv"),
+                             header=TRUE, sep=",", check.names=T)
+```
+
+## Percentage with an admission, overall
+
+```{r rateadm.overall, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+pct.with.admission <- table2.all.partners %>%
+  filter(.,breakdown.level=="overall"&partner!="Liverpool and Wirral"&partner!="NW London") %>%
+  mutate(.,admission=ifelse(score_band=="no admission","no","yes")) %>%
+  group_by(.,partner,admission) %>%
+  summarise(.,number.patients = sum(number.patients),
+            pct.people = sum(pct.people),
+            breakdown.level = first(breakdown.level)) %>%
+  ungroup(.)
+
+pct.with.admission.plot <- ggplot(pct.with.admission,
+  aes(fill=admission , y = pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  ggtitle("Admissions rate") +
+  theme_ipsum()
+
+ggplotly(pct.with.admission.plot)
+```
+
+## Percentage with an admission, by age group
+
+```{r rateadm.age, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+pct.with.admission.age <- table2.all.partners %>%
+  filter(.,breakdown=="age"&partner=="Grampian") %>%
+  mutate(.,admission=ifelse(score_band=="no admission","no","yes")) %>%
+  group_by(.,partner,breakdown.level,admission) %>%
+  summarise(.,number.patients = sum(number.patients),
+            pct.people = sum(pct.people),
+            breakdown.level = first(breakdown.level)) %>%
+  ungroup(.)
+
+pct.with.admission.age.plot  <- ggplot(pct.with.admission.age,
+  aes(fill=admission , y = pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  ggtitle("Admissions rate") +
+  theme_ipsum()
+
+ggplotly(pct.with.admission.age.plot)
+```
+
+## Conditions, overall
+
+```{r conditionsbis.overall, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.people.overall <- table1.all.partners %>% filter(.,breakdown=="overall") %>%
+  filter(.,condition!="total_diagnoses") %>%
+  arrange(.,-pct.people) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+people.overall <- ggplot(pct.people.overall) +
+  geom_bar(aes(x = reorder(condition.desc.short, -pct.people),
+               y = pct.people, fill = partner), stat="identity",position="dodge") +
+  scale_x_discrete(name="Conditions") +
+  scale_y_continuous(name="% of CEV people") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(people.overall)
+```
+
+## Number of admissions by condition, per CEV person
+
+```{r admissions.overall, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+number.admissions.overall <- filter(table1.all.partners,breakdown.level=="overall") %>%
+  filter(.,condition!="total_diagnoses") %>%
+  arrange(.,-yearly.admissions.per.person) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+admissions.overall <- ggplot(number.admissions.overall) +
+  geom_bar(aes(x = reorder(condition.desc.short, -yearly.admissions.per.person),
+               y = yearly.admissions.per.person, fill = partner), stat="identity",position="dodge") +
+  scale_x_discrete(name="Conditions") +
+  scale_y_continuous(name="Admissions/CEV person per year") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(admissions.overall)
+
+# plot_ly(number.admissions.overall, x = ~reorder(condition.desc.short,-number.admissions), y = ~number.admissions, type = "bar", name = "Number of admissions") %>%
+#   add_lines(x = ~reorder(condition.desc.short,-number.admissions), y = ~yearly.admissions.per.user, mode = "lines", yaxis = "y2", name = "Number admissions per affected patient") %>%
+#   layout(xaxis = list(title = "Condition"),
+#          yaxis = list(showgrid=FALSE, title = "Total admissions"),
+#          yaxis2 = list(overlaying = "y", side = "right",showgrid=FALSE, title = "Admissions/affected patient\n(per year)"),
+#          legend= list(itemsizing='constant'))
+```
+
+## Number of admissions by condition, per affected CEV person
+
+```{r admissions.user.overall, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+number.admissions.user.overall <- filter(table1.all.partners,breakdown.level=="overall") %>%
+  filter(.,condition!="total_diagnoses") %>%
+  arrange(.,-yearly.admissions.per.user) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.user>0.01))
+
+admissions.user.overall <- ggplot(number.admissions.overall) +
+  geom_bar(aes(x = reorder(condition.desc.short, -yearly.admissions.per.user),
+               y = yearly.admissions.per.person, fill = partner), stat="identity",position="dodge") +
+  scale_x_discrete(name="Conditions") +
+  scale_y_continuous(name="Admissions/affected CEV person per year") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(admissions.user.overall)
+
+# plot_ly(number.admissions.overall, x = ~reorder(condition.desc.short,-number.admissions), y = ~number.admissions, type = "bar", name = "Number of admissions") %>%
+#   add_lines(x = ~reorder(condition.desc.short,-number.admissions), y = ~yearly.admissions.per.user, mode = "lines", yaxis = "y2", name = "Number admissions per affected patient") %>%
+#   layout(xaxis = list(title = "Condition"),
+#          yaxis = list(showgrid=FALSE, title = "Total admissions"),
+#          yaxis2 = list(overlaying = "y", side = "right",showgrid=FALSE, title = "Admissions/affected patient\n(per year)"),
+#          legend= list(itemsizing='constant'))
+```
+
+## Conditions, overall: % people and admissios/CEV person per year [superimposed, for one site]
+
+```{r conditions.overall, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+pct.people.overall.onesite <- table1.all.partners %>% filter(.,partner=="Wales"&breakdown=="overall") %>%
+  filter(.,condition!="total_diagnoses") %>%
+  arrange(.,-pct.people) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+plot_ly(pct.people.overall.onesite, x = ~reorder(condition.desc.short,-pct.people), y = ~pct.people, type = "bar", name = "% patients with condition") %>%
+  add_lines(x = ~reorder(condition.desc.short,-pct.people), y = ~yearly.admissions.per.person, mode = "lines", yaxis = "y2", name = "Number admissions/CEV person per year") %>%
+  layout(xaxis = list(title = "Condition"),
+         yaxis = list(showgrid=FALSE, title = "% with condition"),
+         yaxis2 = list(overlaying = "y", side = "right",showgrid=FALSE, title = "Admissions/CEV person\n(per year)"),
+         legend= list(x = 0.5, y = 0.9))
+```
+
+## Conditions, by sex: % people and admissions/person
+
+```{r conditions.sex, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.people.sex <- filter(table1.all.partners,breakdown=="sex") %>%
+  filter(.,condition!="total_diagnoses"&breakdown.level!="unknown/other") %>%
+  arrange(.,-pct.people) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+people.and.admissions.sex <- ggplot(pct.people.sex) +
+  facet_wrap(~ partner) +
+  geom_bar(aes(x = breakdown.level, y = pct.people,fill=reorder(condition,-pct.people)),
+           stat="identity",position="dodge") +
+  scale_y_continuous(name = "Percentage of people") +
+  scale_x_discrete(name="Sex") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(people.and.admissions.sex)
+
+```
+
+## Conditions, by age: % people and admissions/person
+
+```{r conditions.age, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.people.age <- filter(table1.all.partners,breakdown=="age") %>%
+  filter(.,condition!="total_diagnoses"&breakdown.level!="unknown") %>%
+  mutate(.,breakdown.level=factor(breakdown.level,
+                                  levels = c("0-29","30-49","50-69","70+"))) %>%
+  arrange(.,-pct.people) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+people.and.admissions.age <- ggplot(pct.people.age) +
+  facet_wrap(~ partner) +
+  geom_bar(aes(x = breakdown.level, y = pct.people,fill=reorder(condition,-pct.people)),
+           stat="identity",position="dodge") +
+  scale_y_continuous(name = "Percentage of people") +
+  scale_x_discrete(name="Age group") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(people.and.admissions.age)
+
+```
+
+## Conditions, by deprivation: % people
+
+```{r conditions.dep, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.people.dep <- filter(table1.all.partners,breakdown=="imd") %>%
+  filter(.,condition!="total_diagnoses"&breakdown.level!="unknown") %>%
+  arrange(.,-pct.people) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+people.and.admissions.dep <- ggplot(pct.people.dep) +
+  facet_wrap(~ partner) +
+  geom_bar(aes(x = breakdown.level, y = pct.people,fill=reorder(condition,-pct.people)),
+           stat="identity",position="dodge") +
+  scale_y_continuous(name = "Percentage of people") +
+  scale_x_discrete(name="Conditions") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(people.and.admissions.dep)
+
+```
+
+## Conditions, by reason for shielding: % people
+
+```{r conditions.reason, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.people.reason <- filter(table1.all.partners,breakdown=="reason_shielding") %>%
+  filter(.,condition!="total_diagnoses"&breakdown.level!="unknown") %>%
+  arrange(.,-pct.people) %>%
+  filter(.,(pct.people>5)|(yearly.admissions.per.person>0.01))
+
+people.and.admissions.reason <- ggplot(pct.people.reason) +
+  facet_wrap(~ partner) +
+  geom_bar(aes(x = breakdown.level, y = pct.people,fill=reorder(condition,-pct.people)),
+           stat="identity",position="dodge") +
+  scale_y_continuous(name = "Percentage of people") +
+  scale_x_discrete(name="Reason for shielding") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(people.and.admissions.reason)
+
+```
+
+## Number of admissions by reason for shielding
+
+```{r admissions.by.reason, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+number.admissions.reason <- filter(table1.all.partners,breakdown=="reason_shielding") %>%
+  filter(.,partner!="Grampian"&breakdown.level!="unknown"&breakdown.level!="other") %>%
+  filter(.,condition!="total_diagnoses"&condition!="rf")
+
+admissions.reason <- ggplot(number.admissions.reason) +
+  geom_bar(aes(x = breakdown.level,y = (number.admissions/2),
+               fill=reorder(condition,-number.admissions)),
+           stat="identity",position="dodge") +
+  facet_wrap(~ partner) +
+  scale_x_discrete(name="Conditions") +
+  scale_y_continuous(name="Admissions per year") +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm")))
+
+ggplotly(admissions.reason)
+```
+
+## Multimorbidity
+
+```{r multimorbidity.overall, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.multimorbidity.overall <- filter(table2.all.partners,breakdown=="overall")
+
+plot.pct.multimorbidity.overall <- ggplot(pct.multimorbidity.overall, aes(fill=score_band, y=pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  viridis::scale_fill_viridis(discrete = T) +
+  ggtitle("Multimorbidity") +
+  theme_ipsum()
+
+ggplotly(plot.pct.multimorbidity.overall)
+```
+
+## Multimorbidity, by sex
+
+```{r multimorbidity.sex, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.multimorbidity.sex <- filter(table2.all.partners,breakdown=="sex") %>%
+  filter(.,breakdown.level %in% c("M","F"))
+
+plot.pct.multimorbidity.sex <- ggplot(pct.multimorbidity.sex,
+                                          aes(fill=score_band, y=pct.people,
+                                              x=breakdown.level)) + 
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  viridis::scale_fill_viridis(discrete = T) +
+  ggtitle("Multimorbidity") +
+  theme_ipsum()
+
+ggplotly(plot.pct.multimorbidity.sex)
+```
+
+## Multimorbidity, by age
+
+```{r multimorbidity.age, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.multimorbidity.age <- filter(table2.all.partners,breakdown=="age")
+
+plot.pct.multimorbidity.age <- ggplot(pct.multimorbidity.age,
+                                          aes(fill=score_band, y=pct.people,
+                                              x=breakdown.level)) + 
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  viridis::scale_fill_viridis(discrete = T) +
+  ggtitle("Multimorbidity") +
+  theme_ipsum()
+
+ggplotly(plot.pct.multimorbidity.age)
+```
+
+## Multimorbidity, by deprivation quintile
+
+```{r multimorbidity.dep, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.multimorbidity.dep <- filter(table2.all.partners,breakdown=="imd") %>%
+  filter(.,breakdown.level!="unknown")
+
+plot.pct.multimorbidity.dep <- ggplot(pct.multimorbidity.dep,
+                                          aes(fill=score_band, y=pct.people,
+                                              x=breakdown.level)) + 
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  viridis::scale_fill_viridis(discrete = T) +
+  ggtitle("Multimorbidity") +
+  theme_ipsum()
+
+ggplotly(plot.pct.multimorbidity.dep)
+```
+
+## Multimorbidity, by reason for shielding
+
+```{r multimorbidity.reason, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.multimorbidity.reason <- filter(table2.all.partners,breakdown=="reason_shielding"&
+  partner!="Leeds") %>%
+  filter(.,breakdown.level!="unknown")
+
+plot.pct.multimorbidity.reason <- ggplot(pct.multimorbidity.reason,
+                                         aes(fill=score_band, y=pct.people,
+                                             x=breakdown.level)) + 
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  viridis::scale_fill_viridis(discrete = T) +
+  ggtitle("Multimorbidity") +
+  theme_ipsum() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(plot.pct.multimorbidity.reason)
+```
+
+## van Walraven score
+
+```{r vwscore.overall, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.vwscore.overall <- filter(table3.all.partners,breakdown=="overall") %>%
+  mutate(.,windex_vw=factor(windex_vw,levels = c("no admission","<0","0","1 to 4",">=5")))
+
+myColors <- c("#bdbdbd",brewer.pal(n = 4, name = "BuPu"))
+names(myColors) <- levels(pct.vwscore.overall$windex_vw)
+FillScale <- scale_fill_manual(name = "grp",values = myColors)
+
+plot.pct.vwscore.overall <- ggplot(pct.vwscore.overall, aes(fill=windex_vw , y=pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  FillScale +
+  ggtitle("Multimorbidity score") +
+  theme_ipsum()
+
+ggplotly(plot.pct.vwscore.overall)
+```
+
+## van Walraven score, by sex
+
+```{r vwscore.sex, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.vwscore.sex <- filter(table3.all.partners,breakdown=="sex") %>%
+  mutate(.,windex_vw=factor(windex_vw,levels = c("no admissions","<0","0","1 to 4",">=5")))
+
+myColors <- c("#bdbdbd",brewer.pal(n = 4, name = "BuPu"))
+names(myColors) <- levels(pct.vwscore.sex$windex_vw)
+FillScale <- scale_fill_manual(name = "grp",values = myColors)
+
+plot.pct.vwscore.sex <- ggplot(pct.vwscore.sex, aes(fill=windex_vw , y=pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  FillScale +
+  ggtitle("Multimorbidity score") +
+  theme_ipsum()
+
+ggplotly(plot.pct.vwscore.sex)
+```
+
+## van Walraven score, by age
+
+```{r vwscore.age, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.vwscore.age <- filter(table3.all.partners,breakdown=="age") %>%
+  mutate(.,windex_vw=factor(windex_vw,levels = c("no admission","<0","0","1 to 4",">=5")))
+
+myColors <- c("#bdbdbd",brewer.pal(n = 4, name = "BuPu"))
+names(myColors) <- levels(pct.vwscore.age$windex_vw)
+FillScale <- scale_fill_manual(name = "grp",values = myColors)
+
+plot.pct.vwscore.age <- ggplot(pct.vwscore.age, aes(fill=windex_vw , y=pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  FillScale +
+  ggtitle("Multimorbidity score") +
+  theme_ipsum()
+
+ggplotly(plot.pct.vwscore.age)
+```
+
+## van Walraven score, by deprivation
+
+```{r vwscore.dep, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.vwscore.dep <- filter(table3.all.partners,breakdown=="imd") %>%
+  mutate(.,windex_vw=factor(windex_vw,levels = c("no admission","<0","0","1 to 4",">=5"))) %>%
+  filter(.,breakdown.level!="unknown")
+
+myColors <- c("#bdbdbd",brewer.pal(n = 4, name = "BuPu"))
+names(myColors) <- levels(pct.vwscore.dep$windex_vw)
+FillScale <- scale_fill_manual(name = "grp",values = myColors)
+
+plot.pct.vwscore.dep <- ggplot(pct.vwscore.dep, aes(fill=windex_vw , y=pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  FillScale +
+  ggtitle("Multimorbidity score") +
+  theme_ipsum()
+
+ggplotly(plot.pct.vwscore.dep)
+```
+
+## van Walraven score, by reason for shielding
+
+```{r vwscore.reason, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE,fig.width=9,fig.height=6}
+
+pct.vwscore.reason <- filter(table3.all.partners,breakdown=="reason_shielding") %>%
+  filter(.,breakdown.level!="transplant") %>%
+  mutate(.,windex_vw=factor(windex_vw,levels = c("no admission","<0","0","1 to 4",">=5")))
+
+myColors <- c("#bdbdbd",brewer.pal(n = 4, name = "BuPu"))
+names(myColors) <- levels(pct.vwscore.reason$windex_vw)
+FillScale <- scale_fill_manual(name = "grp",values = myColors)
+
+plot.pct.vwscore.reason <- ggplot(pct.vwscore.reason, aes(fill=windex_vw , y=pct.people, x=breakdown.level)) +
+  facet_wrap(~ partner) +
+  geom_bar(position="fill", stat="identity") +
+  FillScale +
+  ggtitle("Multimorbidity score") +
+  theme_ipsum() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(plot.pct.vwscore.reason)
+```
