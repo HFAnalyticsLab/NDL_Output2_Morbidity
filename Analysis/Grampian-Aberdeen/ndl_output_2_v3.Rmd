@@ -1,0 +1,612 @@
+
+# Libraries
+```{r, message = F}
+library(tidyverse)
+
+.libPaths(
+  c('H:/DaSH416/R_libraries/R_Transfer_25062020',
+    'H:/DaSH416/R_libraries/R_Libraries_15072020',
+    'H:/DaSH416/R_libraries/R_Transfer_06012021'))
+
+library(here)
+library(vroom)
+library(lubridate)
+library(janitor)
+library(comorbidity)
+
+options(scipen = 999)
+```
+
+# Load original shielding data
+```{r message = F}
+#tidy and combine "pregnant" with "other" group
+shielding_long <-
+  vroom(here("original_data", 'Dash416_Shield20201012_Release.csv'),
+        delim = "¬") %>%
+  clean_names() %>%
+  rename(id = dash416_release_uid) %>%
+  mutate(date_addition = as_date(ymd_hms(earliest_addition_this_chi)),
+         date_death = as_date(ymd(trak_person_deceased_date))) %>%
+  select(id,
+         group,
+         origin_for_this_group,
+         date_addition,
+         removal_description,
+         date_death) %>%
+  mutate(group = ifelse(group == 6, 7, group)) %>%
+  distinct()
+
+#add translation of shielding group codes
+shielding_long <-
+  vroom(here("original_data", "shielding_codes_short.csv"),
+        delim = ",") %>%
+  left_join(shielding_long, ., by = c("group" = "shielding_group"))
+
+demog <-
+  vroom(here("original_data", 'Dash416_Shield20201012_Demographic_Release.csv'),
+        delim = "¬") %>%
+  rename(id = Dash416_Release_UID) %>%
+  clean_names() %>%
+  select(id, calc_sex, calc_dob)
+
+vulnerability <-
+  vroom(here("original_data", 'Dash416_Shield20201012_vulnerability_Release.csv'),
+        delim = "¬") %>%
+  clean_names() %>%
+  rename(id = dash416_release_uid,
+         simd_quintile = simd2020v2_quintile, 
+         ur_name = u_rname) %>%
+  select(id, simd_quintile, ur_name)
+```
+
+
+# Population exclusions
+```{r}
+#anyone not on shielding list before 1 Aug
+#anyone who died before 28 March
+#false positives
+#moved from Scotland
+shielding_long <-
+  shielding_long %>%
+  filter(date_addition <= ymd("2020-07-31")) %>%
+  filter(date_death > ymd("2020-03-28") |
+           is.na(date_death)) %>%
+  filter(
+    !removal_description %in%
+      c("FalsePosLungCancer", "False Positive", "Moved out of Scotland")) 
+
+unique_ids <- unique(shielding_long$id)
+```
+
+
+# Tidy demographic data
+```{r}
+demog <- 
+  demog %>%
+    filter(id %in% unique_ids)
+
+#create variables for sex and age band
+demog <- demog %>%
+  mutate(
+    sex = if_else(calc_sex == 1, "F", "M"),
+    dob = ymd(calc_dob),
+    age = as.period(interval(dob, ymd("2020-03-01")), units = "years")$year,
+    age_band = 
+      case_when(
+        age %in% c(0:29) ~ "0-29",
+        age %in% c(30:49) ~"30-49",
+        age %in% c(50:69) ~"50-69",
+        age %in% c(70:120) ~"70+")) %>%
+  select(-calc_sex, -calc_dob)
+
+demog$age_band <- factor(demog$age_band, levels = c("0-29", "30-49", "50-69", "70+"))
+
+#add details of shielding reasons to demographics
+demog <- 
+  demog %>%
+  left_join(., vulnerability, by = "id")
+
+#add some demographics values to long shielding list
+shielding_long <-
+  demog %>%
+    select(id, age, age_band, sex, simd_quintile, ur_name) %>%
+  left_join(shielding_long, ., by = "id") 
+
+rm(vulnerability)
+```
+
+# Tidy hospital admissions
+```{r}
+#load data, rename variables, format dates, select only variables needed
+smr01 <-
+  vroom(here("original_data", 'Dash416_Shield20201012_SMR01_Release.csv'),
+        delim = "¬") %>%
+  clean_names() %>%
+  rename(
+    id = dash416_release_uid,
+    main_condition = main_cod,
+    other_condition1 = oc1,
+    other_condition2 = oc2,
+    other_condition3 = oc3,
+    other_condition4 = oc4,
+    other_condition5 = oc5
+  ) %>%
+  mutate(
+    date_episode_start = as_date(ymd(date_episode_start)),
+    date_episode_end = as_date(ymd(date_episode_end)),
+    date_admission = as_date(ymd(adm_date)),
+    date_discharge = as_date(ymd(date_discharge)),
+    episode_id = paste(id, date_episode_start, sep = "_")) %>%
+  unite(
+    diagnoses_admission, 
+    c(main_condition:other_condition5), 
+    remove = F, sep = ", ", na.rm = T) %>%
+  select(
+    id,
+    episode_id,
+    date_episode_start,
+    date_admission,
+    date_discharge,
+    date_episode_end,
+    main_condition,
+    other_condition1,
+    other_condition2,
+    other_condition3,
+    other_condition4,
+    other_condition5,
+    diagnoses_admission
+  )
+```
+
+#Date exclusions
+```{r}
+#select date range and those in NDL population
+smr01 <- 
+  filter(smr01, 
+         date_episode_start >= ymd("2018-03-01"),
+         date_episode_end <= ymd("2020-02-29"),
+         id %in% unique_ids)
+```
+
+
+#Calculate morbidity for admissions
+```{r}
+#get main condition diagnosed for last phase of spell
+main_condition_last_admission <-
+smr01 %>%
+  group_by(episode_id) %>%
+  arrange(date_admission) %>%
+  slice_tail() %>%
+  ungroup() %>%
+  select(episode_id, id, date_episode_start, main_condition) 
+
+#use R package comorbidity to calculate to NDL specs
+admission_morbidity <-
+  comorbidity(
+    x = main_condition_last_admission,
+    id = "episode_id",
+    code = "main_condition",
+    score = "elixhauser",
+    icd = "icd10",
+    assign0 = T
+  ) %>%
+  separate(episode_id, into = c("id", "date"), sep = "_")
+```
+
+#Calculate morbidity for people
+```{r}
+#make longer df that has one diagnosis per row (comorbidity input)
+smr01_diagnoses <-
+smr01 %>%
+  pivot_longer(main_condition:other_condition5, values_drop_na = T) %>%
+  select(id, episode_id, date_episode_start, name, value) 
+
+#use R package comorbidity to calculate to NDL specs
+person_morbidity <-
+  comorbidity(
+    x = smr01_diagnoses,
+    id = "id",
+    code = "value",
+    score = "elixhauser",
+    icd = "icd10",
+    assign0 = T
+  ) %>%
+  mutate(score_band = case_when(score == 0 ~ 0,
+                                score == 1 ~ 1,
+                                score > 1 ~ 2))
+```
+
+#Tables 2.2 and 2.3
+```{r}
+demog_morbidity <-
+demog %>%
+  left_join(., person_morbidity, by = "id") 
+
+demog_morbidity %>%
+  group_by(score_band) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.2_overall.csv")
+
+demog_morbidity %>%
+  group_by(windex_vw) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.3_overall.csv")
+
+demog_morbidity %>%
+group_by(sex, score_band) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.2_sex.csv")
+
+demog_morbidity %>%
+  group_by(sex, windex_vw) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.3_sex.csv")
+
+demog_morbidity %>%
+group_by(age_band, score_band) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.2_age.csv")
+
+demog_morbidity %>%
+  group_by(age_band, windex_vw) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.3_age.csv")
+
+demog_morbidity %>%
+group_by(simd_quintile, score_band) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.2_deprivation.csv")
+
+demog_morbidity %>%
+  group_by(simd_quintile, windex_vw) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.3_deprivation.csv")
+```
+
+#Tables Reasons
+```{r}
+#nb people can have more than one reason for shielding
+
+shielding_long_morbidity <-
+shielding_long %>%
+  left_join(., person_morbidity, by = "id")
+
+shielding_long_morbidity %>%
+  group_by(shielding_group_description, score_band) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.2_reasons.csv")
+
+shielding_long_morbidity %>%
+  group_by(shielding_group_description, windex_vw) %>%
+  summarise(n_people = n()) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.3_reasons.csv")
+```
+
+#Tables Conditions
+```{r}
+summary_admissions <-
+admission_morbidity %>%
+  summarise(
+    n_people = n_distinct(id),
+    n_diagnoses = n(),
+    chf = sum(chf == 1),
+    carit = sum(carit == 1),
+    valv = sum(valv == 1),
+    pcd = sum(pcd == 1),
+    pvd = sum(pvd == 1),
+    hypunc = sum(hypunc == 1),
+    hypc = sum(hypc == 1),
+    para = sum(para == 1),
+    ond = sum(ond == 1),
+    cpd = sum(cpd == 1),
+    diabunc = sum(diabunc == 1),
+    diabc = sum(diabc == 1),
+    hypothy = sum(hypothy == 1),
+    rf = sum(rf == 1),
+    ld = sum(ld == 1),
+    pud = sum(pud == 1),
+    lymph = sum(lymph == 1),
+    metacanc = sum(metacanc == 1),
+    solidtum = sum(solidtum == 1),
+    rheumd = sum(rheumd == 1),
+    coag = sum(coag == 1),
+    obes = sum(obes == 1),
+    wloss = sum(wloss == 1),
+    fed = sum(fed == 1),
+    blane = sum(blane == 1),
+    dane = sum(dane == 1),
+    alcohol = sum(alcohol == 1),
+    drug = sum(drug == 1),
+    psycho = sum(psycho == 1),
+    depre = sum(depre == 1)
+  )
+
+summary_person <-
+person_morbidity %>%
+  summarise(
+    n_people = n_distinct(id),
+    n_diagnoses = nrow(smr01_diagnoses),
+    chf = sum(chf == 1),
+    carit = sum(carit == 1),
+    valv = sum(valv == 1),
+    pcd = sum(pcd == 1),
+    pvd = sum(pvd == 1),
+    hypunc = sum(hypunc == 1),
+    hypc = sum(hypc == 1),
+    para = sum(para == 1),
+    ond = sum(ond == 1),
+    cpd = sum(cpd == 1),
+    diabunc = sum(diabunc == 1),
+    diabc = sum(diabc == 1),
+    hypothy = sum(hypothy == 1),
+    rf = sum(rf == 1),
+    ld = sum(ld == 1),
+    pud = sum(pud == 1),
+    lymph = sum(lymph == 1),
+    metacanc = sum(metacanc == 1),
+    solidtum = sum(solidtum == 1),
+    rheumd = sum(rheumd == 1),
+    coag = sum(coag == 1),
+    obes = sum(obes == 1),
+    wloss = sum(wloss == 1),
+    fed = sum(fed == 1),
+    blane = sum(blane == 1),
+    dane = sum(dane == 1),
+    alcohol = sum(alcohol == 1),
+    drug = sum(drug == 1),
+    psycho = sum(psycho == 1),
+    depre = sum(depre == 1)
+  )
+
+table_2.1_overall <- add_row(summary_person, summary_admissions) %>%
+  write_csv(., "table_2.1_overall.csv")
+```
+
+#Functions to count conditions
+```{r}
+
+#counts occurence of condition in people
+#removes values if less than 5 people
+summarise_conditions <-
+function(x) {
+  x %>%
+   summarise(
+    n_people = n_distinct(id),
+    chf = sum(chf == 1),
+    carit = sum(carit == 1),
+    valv = sum(valv == 1),
+    pcd = sum(pcd == 1),
+    pvd = sum(pvd == 1),
+    hypunc = sum(hypunc == 1),
+    hypc = sum(hypc == 1),
+    para = sum(para == 1),
+    ond = sum(ond == 1),
+    cpd = sum(cpd == 1),
+    diabunc = sum(diabunc == 1),
+    diabc = sum(diabc == 1),
+    hypothy = sum(hypothy == 1),
+    rf = sum(rf == 1),
+    ld = sum(ld == 1),
+    pud = sum(pud == 1),
+    lymph = sum(lymph == 1),
+    metacanc = sum(metacanc == 1),
+    solidtum = sum(solidtum == 1),
+    rheumd = sum(rheumd == 1),
+    coag = sum(coag == 1),
+    obes = sum(obes == 1),
+    wloss = sum(wloss == 1),
+    fed = sum(fed == 1),
+    blane = sum(blane == 1),
+    dane = sum(dane == 1),
+    alcohol = sum(alcohol == 1),
+    drug = sum(drug == 1),
+    psycho = sum(psycho == 1),
+    depre = sum(depre == 1)
+  ) %>%
+  mutate_at(vars(chf:depre), function(x) {
+    ifelse(x < 5, NA, x)
+  })
+}
+
+#sums occurence of condition in admissions
+#removes values if less than 5 people
+
+summarise_admissions <-
+  function(x) {
+    x %>%
+      summarise(
+        n_people = n_distinct(id),
+        n_admissions = sum(n_admissions),
+        chf = sum(chf),
+        carit = sum(carit),
+        valv = sum(valv),
+        pcd = sum(pcd),
+        pvd = sum(pvd),
+        hypunc = sum(hypunc),
+        hypc = sum(hypc),
+        para = sum(para),
+        ond = sum(ond),
+        cpd = sum(cpd),
+        diabunc = sum(diabunc),
+        diabc = sum(diabc),
+        hypothy = sum(hypothy),
+        rf = sum(rf),
+        ld = sum(ld),
+        pud = sum(pud),
+        lymph = sum(lymph),
+        metacanc = sum(metacanc),
+        solidtum = sum(solidtum),
+        rheumd = sum(rheumd),
+        coag = sum(coag),
+        obes = sum(obes),
+        wloss = sum(wloss),
+        fed = sum(fed),
+        blane = sum(blane),
+        dane = sum(dane),
+        alcohol = sum(alcohol),
+        drug = sum(drug),
+        psycho = sum(psycho),
+        depre = sum(depre)
+      ) %>%
+  mutate_at(vars(chf:depre), function(x) {
+    ifelse(x < 5, NA, x)
+  })
+  }
+```
+
+
+#Tables Conditions in People
+```{r}
+#excludes those with no hospital admissions
+
+demog_morbidity_linked <-
+demog_morbidity %>%
+  filter(!is.na(chf)) 
+
+demog_morbidity_linked %>%
+  group_by(sex) %>%
+  summarise_conditions(.) %>%
+  write_csv(., "table_2.1_sex.csv")
+
+demog_morbidity_linked %>%
+  group_by(age_band) %>%
+  summarise_conditions(.) %>%
+  write_csv(., "table_2.1_age.csv")
+
+demog_morbidity_linked %>%
+  group_by(simd_quintile) %>%
+  summarise_conditions(.) %>%
+  write_csv(., "table_2.1_deprivation.csv")
+
+shielding_long_morbidity %>%
+  filter(!is.na(chf)) %>%
+  group_by(shielding_group_description) %>%
+  summarise_conditions(.) %>%
+  write_csv(., "table_2.1_reasons.csv")
+```
+
+
+#Calculate admissions per person
+```{r}
+admission_morbidity_person <-
+admission_morbidity %>%
+      group_by(id) %>%
+      summarise(
+        n_admissions = n_distinct(date),
+        chf = sum(chf),
+        carit = sum(carit),
+        valv = sum(valv),
+        pcd = sum(pcd),
+        pvd = sum(pvd),
+        hypunc = sum(hypunc),
+        hypc = sum(hypc),
+        para = sum(para),
+        ond = sum(ond),
+        cpd = sum(cpd),
+        diabunc = sum(diabunc),
+        diabc = sum(diabc),
+        hypothy = sum(hypothy),
+        rf = sum(rf),
+        ld = sum(ld),
+        pud = sum(pud),
+        lymph = sum(lymph),
+        metacanc = sum(metacanc),
+        solidtum = sum(solidtum),
+        rheumd = sum(rheumd),
+        coag = sum(coag),
+        obes = sum(obes),
+        wloss = sum(wloss),
+        fed = sum(fed),
+        blane = sum(blane),
+        dane = sum(dane),
+        alcohol = sum(alcohol),
+        drug = sum(drug),
+        psycho = sum(psycho),
+        depre = sum(depre)
+      ) %>%
+  mutate(id = as.numeric(id))
+
+
+#add admissions data to demographics table
+demog_admissions <-
+demog %>%
+  left_join(., admission_morbidity_person, by = "id")
+
+#add admissions data to shielding reasons table 
+shielding_long_admissions <-
+shielding_long %>%
+  left_join(., admission_morbidity_person, by = "id")
+```
+
+#Tables Admissions
+```{r}
+#excludes those with no hospital admissions
+demog_admissions_linked <-
+demog_admissions %>%
+  filter(!is.na(n_admissions)) 
+
+demog_admissions_linked %>%
+  group_by(sex) %>%
+  summarise_admissions(.) %>%
+  adorn_totals %>%
+  write_csv(., "table_2.1_sex_admissions.csv")
+
+demog_admissions_linked %>%
+  group_by(age_band) %>%
+  summarise_admissions(.) %>%
+  adorn_totals() %>%
+  write_csv(., "table_2.1_age_admissions.csv")
+
+shielding_long_admissions %>%
+  filter(!is.na(chf)) %>%
+  group_by(shielding_group_description) %>%
+  summarise_admissions(.) %>%
+  write_csv(., "table_2.1_reasons_admissions.csv")
+```
+
+
+#Double counting error summary
+```{r}
+main_condition_last_admission %>%
+  summarise(
+    F204 = sum(str_detect(main_condition, "F204")),
+    F315 = sum(str_detect(main_condition, "F315")),
+    G114 = sum(str_detect(main_condition, "G114")),
+    I110 = sum(str_detect(main_condition, "I110")),
+    I120 = sum(str_detect(main_condition, "I120")),
+    I130 = sum(str_detect(main_condition, "I130")),
+    I131 = sum(str_detect(main_condition, "I131")),
+    I132 = sum(str_detect(main_condition, "I132")),
+    I278 = sum(str_detect(main_condition, "I278")),
+    I279 = sum(str_detect(main_condition, "I279")),
+    I426 = sum(str_detect(main_condition, "I426")),
+    K700 = sum(str_detect(main_condition, "K700")),
+    K703 = sum(str_detect(main_condition, "K703")),
+    K709 = sum(str_detect(main_condition, "K709"))) %>%
+  write_csv(., "appendix_table.csv")
+```
+
+
+#Deprivation Table Admissions
+```{r}
+demog_admissions_linked %>%
+  group_by(simd_quintile) %>%
+  summarise_admissions(.) %>%
+  adorn_totals %>%
+  write_csv(., "table_2.1_simd_admissions.csv")
+```
+
+
+
+
+
