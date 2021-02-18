@@ -11,7 +11,9 @@
 - We are using a federated approach to data analysis and each partner will be contributing the same descriptive analysis based on their local population. These results will then be analysed and aggregated where necessary.
 
 - We will identify long-term conditions by looking back at hospital admission health care records in the period between 1 March 2018 and 29 February 2020. The long-term conditions identified for this analysis are the conditions which comprise the Elixhauser Comorbidity Index. In some cases, there may be overlap with the conditions on the
-shielded patient list. We will aim to identify each of the following conditions by identifying inpatient records that match the relevant ICD-10 cides. In short, an individual is assumed to have had the condition if any record exists during this period matching the relevant ICD-10 codes corresponding to this condition (regardless of whether this was the primary diagnosis). A coding algorithm is set out by [Quan et al (2005)](https://pubmed.ncbi.nlm.nih.gov/21764557/). Please note that the conditions and ICD-10 codes reported here may not be the final version used in the analysis – and some adjustment based on local coding practices may be necessary.
+shielded patient list.
+
+- We will aim to identify each of the following conditions by identifying inpatient records that match the relevant ICD-10 cides. In short, an individual is assumed to have had the condition if any record exists during this period matching the relevant ICD-10 codes corresponding to this condition (regardless of whether this was the primary diagnosis). A coding algorithm is set out by [Quan et al (2005)](https://pubmed.ncbi.nlm.nih.gov/21764557/).
 
 ## Partners
 
@@ -45,4 +47,4 @@ These scripts were written in R version 4.0.2 and RStudio Version 1.1.383.
 
 ## License
 
-This project is licensed under the [MIT License](https://github.com/HFAnalyticsLab/NDL_Output1_Demographics/blob/main/LICENSE).
+This project is licensed under the [MIT License](https://github.com/HFAnalyticsLab/NDL_Output2_Morbidity/blob/main/LICENSE).
