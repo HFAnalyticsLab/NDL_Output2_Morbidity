@@ -2,7 +2,7 @@
 
 # Networked Data Lab: Morbidity and long-term conditions among those advised to shield from COVID-19
 
-#### Project Status: In progess
+#### Project Status: Completed
 
 ## Project Description
 
